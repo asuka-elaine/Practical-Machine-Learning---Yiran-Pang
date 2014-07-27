@@ -1,0 +1,151 @@
+---
+title: "Practical Machine Learning Writeup"
+author: "Yiran Pang"
+date: "July 26, 2014"
+output: html_document
+---
+
+**Background**
+Human Activity Recognition(HAR) technology has emergied in the last few years. However, the focus has always been how much exercise a person did, instead of how well they do it. The purpose of this project is to develop a model to predict how well the exercise is done.
+ 
+We build the model by leveraging the data recorded by the sensors experiment participants are wearing when doing weight lifting. We want to predict whether they are doing the exercise correctly, represented by the class they belong (A-E).
+ 
+The training and testing data sets are from <http://groupware.les.inf.puc-rio.br/har>
+ 
+**Detailed Steps**
+
+- Step 1: Data Loading
+Load the datasets into R:
+
+```{r}
+library(caret)
+trainingOri <- read.csv("~/R resources/Course Project/pml-training.csv", header=TRUE, na.strings = c("NA",""))
+testingOri <- read.csv("~/R resources/Course Project/pml-testing.csv", header=TRUE, na.strings = c("NA",""))
+dim(trainingOri)
+```
+
+There were 19622 observations with the training set. Each observation includes 159 predictors and 1 outcome value(classe).
+
+- Step 2: Clean Raw Dataset
+I looked into the training dataset using following command:
+>summary(trainingOri) 
+Several issues came out:
+  1) A lot of predictors are having almost zero variances and hence shall be removed.(e.g. amplitude_yaw_belt)
+  Following code reduced the predictor to 116.
+```{r}
+#Remove variables with almost zero variances
+nzv<-nearZeroVar(trainingOri)
+trainingOri2 <- trainingOri[,-nzv]
+testingOri2 <-testingOri[,-nzv]
+dim(trainingOri2)
+```
+ 2) Several predictors have ‘NA’ value for 19216 out of 19622 predictions. They will mess up our final predictions and hence shall be removed as well.
+  Following code reduced the predictor to 58
+```{r}
+#Remove variables with almost zero variances
+trainingOri3<-trainingOri2[,colSums(is.na(trainingOri2))==0]
+testingOri3<-testingOri2[,colSums(is.na(trainingOri2))==0]
+dim(trainingOri3)
+```
+  3) There are some predictors that are either non-numeric or obviously won’t contribute to the final prediction. In this step I removed four columns and reduced the predictor to 54.:
+    - X: the row number indicator
+    - user_name: according to the data description each member is doing the exercise so that ‘the execution complied to the manner they were supposed to simulate’, this column shall not affect the outcome as well.
+    - raw_timestamp_part_1: this is part 1 of the exercise timestamp and are in the level of 10^9. It isn’t as informative as raw_timestamp_part_2 so I removed it as well.
+    - cvtd_timestamp: the time information shall be sufficiently represented by raw_timestamp_part_2 and hence this column is removed as well in this step.
+
+```{r}
+#Remove variables that are non-numeric or (apparently) non-informative
+trainingOriFin<-trainingOri3[,c(-1,-2,-3,-5)]
+testingOriFin<-testingOri3[,c(-1,-2,-3,-5)]
+dim(trainingOriFin)
+```
+
+- Step 3: Data Splitting and Analysis
+ 
+  1) Split the training set into 60% training（11776 observations） and 40% testing(7846 observations): 
+```{r}
+inTrain <- createDataPartition(y=trainingOriFin$classe,p=0.6,list=FALSE)
+training <- trainingOriFin[inTrain,]
+testing<-trainingOriFin[-inTrain,]
+dim(training)
+dim(testing)
+```
+
+  2) I then looked into the covariance of the variables: a lot of variables are highly correlated:
+
+```{r}
+M<-abs(cor(training[,-55]))
+diag(M)<-0
+head(which(M>0.8,arr.ind=T))
+```
+  3) Plot the highly correlated variables versus ‘classe’: these predictors are not only highly correlated with each other, they are also not informative in predicting:
+ 
+*Example*: the indicator yaw_belt
+```{r}
+library(Hmisc)
+#Check quality of highly correlated variables
+cutyb<-cut2(training$yaw_belt,g=5)
+```
+
+Running qplot(c(1:11776),training$classe,color=cutyb) and get following chart, which shows the yaw_belt won't make a good predictor for final outputs: 
+
+```{r, echo=FALSE}
+qplot(c(1:11776),training$classe,color=cutyb)
+```
+
+- Step 4: Preprocessing, Model Building and Checking
+ 
+I then decide to take three approaches to build the model.
+
+  - **Approach 1**: use original dataset as predictors
+    
+  - **Approach 2**: remove the highly correlated non-informative columns, use the rest as predictors
+    
+  - **Approach 3**: apply PCA to the original dataset to produce predictors
+ 
+The conclusion is Approach 2 produced the best model considering accuracy and efficiency.
+ 
+  - **Approach 1**: Predict using the training set without further preprocessing.
+ 
+The accuracy for this is quite high(0.9977), yet it took forever to run hence isn’t scalable.
+```{r}
+set.seed(726)
+#Model 1: use original set
+modelFit <- train(training$classe ~.,data=training,method="rf",trControl = trainControl(method='cv'))
+confusionMatrix(testing$classe,predict(modelFit,testing))
+```
+
+  - **Approach 2**: Predict using the processed training set by directly excluding the highly correlated variables.
+ 
+Accuracy is also really good(0.9973) and didn’t take so much time.
+
+```{r}
+#Model 2: remove highly correlated and low contribution predictors
+training2 <- training[,c(-3,-4,-5,-6,-10,-11,-12,-13,-20,-21,-24,-26,-27,-28,-30,-31,-33,-35,-36,-47,-48)]
+testing2 <- testing[,c(-3,-4,-5,-6,-10,-11,-12,-13,-20,-21,-24,-26,-27,-28,-30,-31,-33,-35,-36,-47,-48)]
+modelFit2 <- train(training$classe ~.,data=training2,method="rf",trControl = trainControl(method='cv'))
+confusionMatrix(testing$classe,predict(modelFit2,testing2))
+```
+
+  - **Approach 3**: Predict using the processed training set by PCA(with threshold = 0.95).
+ 
+Didn’t take much time either. Yet the accuracy isn’t as good(0.974).
+
+```{r}
+#Model 3: use PCA to reduce correlation
+preProc <- preProcess(training[,-55],method="pca",thresh=0.95)
+trainPC <- predict(preProc,training[,-55])
+modelFit3 <- train(training$classe ~.,data=trainPC,method="rf",trControl = trainControl(method='cv'))
+testPC <- predict(preProc,testing[,-55])
+confusionMatrix(testing$classe,predict(modelFit3,testPC))
+```
+
+- Step 5: Predict Final Testing Set.
+I decided **model2** produced by second approach is the best option. So I used it to predict the final testing set and get a 100% accuracy when submitting the output:
+
+```{r}
+#Predict with Model 2 using testing set
+testingOriFin2<-testingOriFin[,c(-3,-4,-5,-6,-10,-11,-12,-13,-20,-21,-24,-26,-27,-28,-30,-31,-33,-35,-36,-47,-48)]
+answers <- predict(modelFit2,testingOriFin2)
+answers
+```
